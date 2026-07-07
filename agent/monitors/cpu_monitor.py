@@ -47,9 +47,12 @@ class CpuMonitor(BaseMonitor):
         hardware.Update()
         for sensor in hardware.Sensors:
             try:
-                # Case-insensitive substring check handles all pythonnet 3 enum repr variants
-                # e.g. "Temperature", "SensorType.Temperature", "Hardware.SensorType.Temperature"
-                if "temperature" not in str(sensor.SensorType).lower():
+                sensor_type_str = str(sensor.SensorType)
+                get_logger().warning(
+                    "[LHM DEBUG] sensor=%s type=%s value=%s",
+                    sensor.Name, sensor_type_str, sensor.Value,
+                )
+                if "temperature" not in sensor_type_str.lower():
                     continue
                 if sensor.Value is None:
                     continue
@@ -68,8 +71,20 @@ class CpuMonitor(BaseMonitor):
                 return None
         try:
             sensors = []
+            hw_count = 0
             for hardware in self._computer.Hardware:
-                sensors.extend(self._collect_temp_sensors(hardware))
+                hw_count += 1
+                found = self._collect_temp_sensors(hardware)
+                get_logger().warning(
+                    "[LHM DEBUG] hardware=%s sensors_found=%d all_sensors=%s",
+                    hardware.Name,
+                    len(found),
+                    [(n, v) for n, v in found],
+                )
+                sensors.extend(found)
+            if hw_count == 0:
+                get_logger().warning("[LHM DEBUG] computer.Hardware is empty — LHM may not have enumerated any hardware")
+                return None
             if not sensors:
                 return None
             # Prefer Tctl/Tdie or Package; fall back to highest value found
