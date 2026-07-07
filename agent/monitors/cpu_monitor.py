@@ -1,13 +1,22 @@
+import ctypes
 import psutil
 
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
 
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 class CpuMonitor(BaseMonitor):
     """
     CPU package temperature via LibreHardwareMonitorLib.dll (pythonnet).
     CPU usage % and real-time frequency via psutil.
+    Requires the process to run as Administrator for AMD CPU temperature access.
     """
 
     def __init__(self, max_temp: float, max_usage: float, dll_path: str):
@@ -16,16 +25,37 @@ class CpuMonitor(BaseMonitor):
         self._max_usage = max_usage
         self._dll_path = dll_path
         self._computer = None
-        self._lhm = None
+        self._UpdateVisitor = None
         self._init_lhm()
 
     def _init_lhm(self) -> bool:
-        """Load the LHM DLL and open the computer object. Returns True on success."""
+        if not _is_admin():
+            get_logger().warning(
+                "CPU temp requires Administrator privileges — "
+                "run main.py as Administrator or via an elevated Task Scheduler entry."
+            )
+            return False
         try:
-            import clr  # type: ignore  # pythonnet
+            import clr  # type: ignore
             clr.AddReference(self._dll_path)
-            from LibreHardwareMonitor.Hardware import Computer  # type: ignore
-            self._lhm = __import__("LibreHardwareMonitor.Hardware", fromlist=["Hardware"])
+            from LibreHardwareMonitor.Hardware import Computer, IVisitor  # type: ignore
+            import System  # type: ignore
+
+            # Implement IVisitor via pythonnet to properly trigger AMD SMU sensor updates
+            class UpdateVisitor(IVisitor):
+                def VisitComputer(self, computer):
+                    computer.Traverse(self)
+                def VisitHardware(self, hardware):
+                    hardware.Update()
+                    for sub in hardware.SubHardware:
+                        sub.Accept(self)
+                def VisitSensor(self, sensor):
+                    pass
+                def VisitParameter(self, parameter):
+                    pass
+
+            self._UpdateVisitor = UpdateVisitor
+
             computer = Computer()
             computer.IsCpuEnabled = True
             computer.Open()
@@ -34,7 +64,7 @@ class CpuMonitor(BaseMonitor):
         except FileNotFoundError:
             get_logger().warning(
                 "LHM DLL not found at '%s' — CPU temp will not be monitored. "
-                "Update lhm_dll_path in config.yaml to point to LibreHardwareMonitorLib.dll.",
+                "Update lhm_dll_path in config.yaml.",
                 self._dll_path,
             )
         except Exception as e:
@@ -42,17 +72,10 @@ class CpuMonitor(BaseMonitor):
         return False
 
     def _collect_temp_sensors(self, hardware) -> list[tuple[str, float]]:
-        """Recursively collect (name, value) for all temperature sensors on hardware and sub-hardware."""
         results = []
-        hardware.Update()
         for sensor in hardware.Sensors:
             try:
-                sensor_type_str = str(sensor.SensorType)
-                get_logger().warning(
-                    "[LHM DEBUG] sensor=%s type=%s value=%s",
-                    sensor.Name, sensor_type_str, sensor.Value,
-                )
-                if "temperature" not in sensor_type_str.lower():
+                if "temperature" not in str(sensor.SensorType).lower():
                     continue
                 if sensor.Value is None:
                     continue
@@ -70,24 +93,16 @@ class CpuMonitor(BaseMonitor):
             if not self._init_lhm():
                 return None
         try:
+            # Use visitor pattern — required for AMD SMU temperature sensors to update
+            self._computer.Accept(self._UpdateVisitor())
+
             sensors = []
-            hw_count = 0
             for hardware in self._computer.Hardware:
-                hw_count += 1
-                found = self._collect_temp_sensors(hardware)
-                get_logger().warning(
-                    "[LHM DEBUG] hardware=%s sensors_found=%d all_sensors=%s",
-                    hardware.Name,
-                    len(found),
-                    [(n, v) for n, v in found],
-                )
-                sensors.extend(found)
-            if hw_count == 0:
-                get_logger().warning("[LHM DEBUG] computer.Hardware is empty — LHM may not have enumerated any hardware")
-                return None
+                sensors.extend(self._collect_temp_sensors(hardware))
+
             if not sensors:
                 return None
-            # Prefer Tctl/Tdie or Package; fall back to highest value found
+
             for name, val in sensors:
                 if "tctl" in name or "tdie" in name or "package" in name:
                     return val
