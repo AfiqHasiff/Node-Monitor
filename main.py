@@ -4,6 +4,7 @@ PC Monitoring Agent — entry point.
 Starts the async polling loop and Telegram bot together.
 All monitors are polled every `poll_interval_seconds`.
 Alerts fire on the rising edge only (threshold crossed from below).
+When any metric breaches its threshold, one combined message is sent with all metrics.
 """
 
 import asyncio
@@ -19,6 +20,7 @@ from agent.monitors.cpu_monitor import CpuMonitor
 from agent.monitors.gpu_monitor import GpuMonitor
 from agent.monitors.ram_monitor import RamMonitor
 from agent.monitors.idle_monitor import IdleMonitor
+from agent.monitors.session_monitor import SessionMonitor
 from agent.telegram_bot import TelegramBot
 
 
@@ -46,8 +48,9 @@ async def main() -> None:
     )
     ram = RamMonitor()
     idle = IdleMonitor(threshold_minutes=cfg["idle"]["threshold_minutes"])
+    session = SessionMonitor()
 
-    monitors = [cpu, gpu, ram, idle]
+    monitors = [cpu, gpu, ram, idle, session]
     poll_interval = cfg.get("poll_interval_seconds", 30)
 
     async def get_status() -> list[MetricSnapshot]:
@@ -78,14 +81,20 @@ async def main() -> None:
         await asyncio.sleep(poll_interval)
 
         all_snapshots: list[MetricSnapshot] = []
+        newly_triggered: list[str] = []
+
         for monitor in monitors:
             snapshots = monitor.read()
             all_snapshots.extend(snapshots)
 
             alerts = monitor.check_alerts(snapshots)
             for alert in alerts:
-                logger.info("%s %s%s alert sent", alert.label, alert.value, alert.unit)
-                await bot.send_alert(alert)
+                newly_triggered.append(f"{alert.label} {alert.value}{alert.unit}")
+
+        if newly_triggered:
+            for label_str in newly_triggered:
+                logger.info("%s alert sent", label_str)
+            await bot.send_alert(all_snapshots)
 
         for s in all_snapshots:
             logger.info("%s %s%s", s.label, s.value, s.unit)

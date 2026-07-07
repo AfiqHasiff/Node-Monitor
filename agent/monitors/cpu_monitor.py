@@ -10,7 +10,7 @@ _LHM_QUERY = "SELECT Name, Value, SensorType FROM Sensor WHERE SensorType='Tempe
 class CpuMonitor(BaseMonitor):
     """
     CPU package temperature via LibreHardwareMonitor WMI bridge (falls back gracefully).
-    CPU usage % via psutil.
+    CPU usage % and real-time frequency via psutil.
     """
 
     def __init__(self, max_temp: float, max_usage: float):
@@ -41,6 +41,15 @@ class CpuMonitor(BaseMonitor):
             get_logger().warning("Failed to read CPU temp from LHM: %s", e)
             return None
 
+    def _read_cpu_freq_ghz(self) -> float | None:
+        try:
+            freq = psutil.cpu_freq()
+            if freq is None:
+                return None
+            return round(freq.current / 1000, 1)
+        except Exception:
+            return None
+
     def read(self) -> list[MetricSnapshot]:
         snapshots = []
 
@@ -54,11 +63,14 @@ class CpuMonitor(BaseMonitor):
             ))
 
         usage = psutil.cpu_percent(interval=None)
+        freq_ghz = self._read_cpu_freq_ghz()
+        display = f"{usage}% @ {freq_ghz}GHz" if freq_ghz is not None else f"{usage}%"
         snapshots.append(MetricSnapshot(
             label="CPU Usage",
             value=usage,
             unit="%",
             threshold=self._max_usage,
+            display_value=display,
         ))
 
         return snapshots

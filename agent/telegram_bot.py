@@ -7,52 +7,29 @@ from telegram.helpers import escape_markdown
 from agent.base_monitor import MetricSnapshot
 from agent.logger import get_logger
 
-_ALERT_EMOJI = {
-    "CPU Temp": "🔥",
-    "GPU Temp": "🔥",
-    "CPU Usage": "⚡",
-    "GPU Usage": "⚡",
-    "GPU VRAM": "💾",
-    "Idle Time": "⚠️",
-}
-
 StatusCallback = Callable[[], Awaitable[list[MetricSnapshot]]]
 
-_MV2 = 2  # MarkdownV2 version constant for escape_markdown
+_MV2 = 2
 
 
 def _esc(text: str) -> str:
     return escape_markdown(str(text), version=_MV2)
 
 
-def _format_alert(snapshot: MetricSnapshot) -> str:
-    emoji = _ALERT_EMOJI.get(snapshot.label, "⚠️")
-    return (
-        f"{emoji} *{_esc(snapshot.label)} Alert*\n\n"
-        f"Current: {_esc(snapshot.value)}{_esc(snapshot.unit)}\n"
-        f"Threshold: {_esc(snapshot.threshold)}{_esc(snapshot.unit)}"
-    )
+def _render_snapshot(s: MetricSnapshot, breached: bool) -> str:
+    display = s.display_value if s.display_value else f"{s.value}{s.unit}"
+    if s.threshold:
+        t = s.threshold_display if s.threshold_display else f"{s.threshold}{s.unit}"
+        display = f"{display} / {t}"
+    badge = "  ⚠️" if breached else ""
+    return f"`{s.label:<12}` {_esc(display)}{badge}"
 
 
-def _format_status(snapshots: list[MetricSnapshot]) -> str:
-    lines = ["🖥 *Node Status*\n"]
-    any_warning = False
-
+def _format_message(header: str, snapshots: list[MetricSnapshot]) -> str:
+    lines = [f"{header}\n"]
     for s in snapshots:
-        if s.label == "Idle Time":
-            total_minutes = int(s.value)
-            hours, minutes = divmod(total_minutes, 60)
-            display = f"{hours}h {minutes}m" if hours else f"{minutes}m"
-        else:
-            display = f"{s.value}{s.unit}"
-
-        if s.threshold and s.value > s.threshold:
-            any_warning = True
-
-        lines.append(f"`{s.label:<12}` {_esc(display)}")
-
-    status_line = "⚠️ WARNING" if any_warning else "✅ Healthy"
-    lines.append(f"\nStatus: {status_line}")
+        breached = bool(s.threshold) and s.value > s.threshold
+        lines.append(_render_snapshot(s, breached))
     return "\n".join(lines)
 
 
@@ -66,7 +43,6 @@ class TelegramBot:
     async def start(self) -> None:
         self._app = Application.builder().token(self._bot_token).build()
         self._app.add_handler(CommandHandler("status", self._handle_status))
-
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -78,13 +54,15 @@ class TelegramBot:
             await self._app.stop()
             await self._app.shutdown()
 
-    async def send_alert(self, snapshot: MetricSnapshot) -> None:
+    async def send_alert(self, snapshots: list[MetricSnapshot]) -> None:
+        """Send one combined alert message for all currently-breached metrics."""
         if self._app is None:
             return
+        text = _format_message("⚠️ *Threshold Alert*", snapshots)
         try:
             await self._app.bot.send_message(
                 chat_id=self._chat_id,
-                text=_format_alert(snapshot),
+                text=text,
                 parse_mode="MarkdownV2",
             )
         except Exception as e:
@@ -94,5 +72,5 @@ class TelegramBot:
         if update.message is None:
             return
         snapshots = await self._status_callback()
-        text = _format_status(snapshots)
+        text = _format_message("🖥 *Node Status*", snapshots)
         await update.message.reply_text(text, parse_mode="MarkdownV2")

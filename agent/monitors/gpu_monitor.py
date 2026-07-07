@@ -4,7 +4,7 @@ from agent.logger import get_logger
 
 class GpuMonitor(BaseMonitor):
     """
-    NVIDIA GPU temperature, utilisation %, and VRAM usage % via pynvml.
+    NVIDIA GPU temperature, utilisation %, memory clock, and VRAM usage via pynvml.
     Gracefully no-ops if no NVIDIA GPU or driver is unavailable.
     """
 
@@ -43,20 +43,33 @@ class GpuMonitor(BaseMonitor):
             ))
 
             util = self._pynvml.nvmlDeviceGetUtilizationRates(self._handle)
+            # Memory clock in MHz for the current utilisation state
+            try:
+                mem_clock_mhz = self._pynvml.nvmlDeviceGetClockInfo(
+                    self._handle, self._pynvml.NVML_CLOCK_MEM
+                )
+                gpu_display = f"{util.gpu}% @ {mem_clock_mhz}MHz"
+            except Exception:
+                gpu_display = f"{util.gpu}%"
+
             snapshots.append(MetricSnapshot(
                 label="GPU Usage",
                 value=float(util.gpu),
                 unit="%",
                 threshold=self._max_usage,
+                display_value=gpu_display,
             ))
 
             mem_info = self._pynvml.nvmlDeviceGetMemoryInfo(self._handle)
-            vram_pct = (mem_info.used / mem_info.total) * 100
+            vram_used_gb = round(mem_info.used / (1024 ** 3), 1)
+            vram_total_gb = round(mem_info.total / (1024 ** 3), 1)
+            vram_pct = round((mem_info.used / mem_info.total) * 100, 1)
             snapshots.append(MetricSnapshot(
                 label="GPU VRAM",
-                value=round(vram_pct, 1),
+                value=vram_pct,
                 unit="%",
                 threshold=self._max_vram_usage,
+                display_value=f"{vram_used_gb} / {vram_total_gb}GB ({vram_pct}%)",
             ))
         except Exception as e:
             get_logger().warning("Failed to read GPU metrics: %s", e)

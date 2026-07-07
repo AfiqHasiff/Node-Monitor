@@ -6,10 +6,12 @@ from dataclasses import dataclass, field
 class MetricSnapshot:
     """A single reading from a monitor at a point in time."""
     label: str
-    value: float
+    value: float          # raw numeric value used for threshold comparison
     unit: str
     threshold: float | None = None
     alert_triggered: bool = False
+    display_value: str = ""      # human-readable override; falls back to f"{value}{unit}" if empty
+    threshold_display: str = ""  # human-readable threshold override; falls back to f"{threshold}{unit}" if empty
 
 
 class BaseMonitor(ABC):

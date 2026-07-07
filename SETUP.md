@@ -35,8 +35,6 @@ LibreHardwareMonitor as a WMI bridge.
    - **Run on Windows startup**
    - **Start minimized**
 
-   This ensures the WMI bridge is available before the monitoring agent polls.
-
 > If LHM is not running, the agent will still work — CPU temperature will simply
 > be absent from readings and alerts. All other metrics continue normally.
 
@@ -78,7 +76,7 @@ telegram:
   chat_id: "123456789"
 ```
 
-Adjust thresholds to suit your hardware:
+Adjust thresholds to suit your hardware. Set any threshold to `0` to disable that alert:
 
 ```yaml
 poll_interval_seconds: 30
@@ -86,16 +84,16 @@ poll_interval_seconds: 30
 logging_enabled: false   # set to true to write daily log files to /logs/
 
 idle:
-  threshold_minutes: 240
+  threshold_minutes: 60   # alert after 1 hour idle; 0 = disabled
 
 cpu:
-  max_temp: 90
-  max_usage: 90
+  max_temp: 90             # 0 = disabled
+  max_usage: 0             # 0 = disabled
 
 gpu:
-  max_temp: 80
-  max_usage: 95
-  max_vram_usage: 90
+  max_temp: 80             # 0 = disabled
+  max_usage: 0             # 0 = disabled
+  max_vram_usage: 0        # 0 = disabled
 ```
 
 ---
@@ -108,7 +106,21 @@ Run the agent from the terminal to verify everything works before scheduling:
 python main.py
 ```
 
-Send `/status` to your Telegram bot. You should receive a status reply.
+Send `/status` to your Telegram bot. You should receive a reply like:
+
+```text
+🖥 Node Status
+
+CPU Temp      54°C / 90°C
+CPU Usage     34% @ 3.8GHz
+GPU Temp      47°C / 80°C
+GPU Usage     12% @ 7000MHz
+GPU VRAM      6.2 / 16GB (41%)
+RAM Usage     6.3 / 16GB (39%)
+Idle Time     2m / 1h
+Logged On     YourWindowsUsername
+```
+
 Press Ctrl+C to stop.
 
 ---
@@ -119,11 +131,14 @@ This makes the agent start automatically on Windows boot and restart if it crash
 
 ### Option A — Import the provided XML (easiest)
 
-1. Open **Task Scheduler** (search in Start menu).
-2. Click **Action → Import Task...**.
-3. Select `task_scheduler.xml` from the project folder.
-4. In the **General** tab, change the user account to your own Windows username.
-5. Click **OK**. You may be asked to enter your Windows password.
+1. Open `task_scheduler.xml` in a text editor and replace all occurrences of
+   `YOURUSERNAME` with your Windows username, and update the Python path if needed.
+
+2. Open **Task Scheduler** (search in Start menu).
+
+3. Click **Action → Import Task...** and select `task_scheduler.xml`.
+
+4. Click **OK**. You may be asked to enter your Windows password.
 
 ### Option B — Create the task manually
 
@@ -136,7 +151,7 @@ This makes the agent start automatically on Windows boot and restart if it crash
 
 3. **Triggers tab → New:**
    - Begin the task: **At startup**
-   - Delay task for: `30 seconds` (gives Windows time to fully boot)
+   - Delay task for: `30 seconds`
 
 4. **Actions tab → New:**
    - Action: **Start a program**
@@ -164,13 +179,28 @@ To turn on diagnostic logging, open `config.yaml` and set:
 logging_enabled: true
 ```
 
-Log files are written to the `logs/` folder, named by date (e.g. `2026-07-07.log`).
-Set it back to `false` when you no longer need them.
+Log files are written to the `logs/` folder as `monitor_agent.log`, rotating at
+midnight and keeping the last 30 days. Set it back to `false` when no longer needed.
 
 ---
 
 ## Available Telegram commands
 
-| Command   | Description                                  |
-|-----------|----------------------------------------------|
-| `/status` | Returns current CPU, GPU, RAM, and idle time |
+| Command   | Description                      |
+|-----------|----------------------------------|
+| `/status` | Current readings for all metrics |
+
+---
+
+## Metrics reference
+
+| Metric       | Source                         | Alert support | Example display         |
+|--------------|--------------------------------|---------------|-------------------------|
+| CPU Temp     | LibreHardwareMonitor (WMI)     | Yes           | `92°C`                  |
+| CPU Usage    | psutil                         | Yes           | `34% @ 3.8GHz`          |
+| GPU Temp     | pynvml (NVIDIA)                | Yes           | `47°C`                  |
+| GPU Usage    | pynvml (NVIDIA)                | Yes           | `12% @ 7000MHz`         |
+| GPU VRAM     | pynvml (NVIDIA)                | Yes           | `6.2 / 16GB (41%)`      |
+| RAM Usage    | psutil                         | No            | `6.3 / 16GB (39%)`      |
+| Idle Time    | Win32 GetLastInputInfo         | Yes           | `2m / 1h`               |
+| Logged On    | Win32 WTS session API          | No            | `User (Locked)`         |

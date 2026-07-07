@@ -9,13 +9,13 @@ logging_enabled: false
 # Set any threshold to 0 to disable that alert entirely.
 
 idle:
-  threshold_minutes: 240
+  threshold_minutes: 60
 
 cpu:
   max_temp: 90
-  max_usage: 90
+  max_usage: 0
 
 gpu:
   max_temp: 80
-  max_usage: 95
-  max_vram_usage: 90
+  max_usage: 0
+  max_vram_usage: 0
