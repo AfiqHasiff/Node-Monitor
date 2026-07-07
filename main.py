@@ -40,6 +40,7 @@ async def main() -> None:
     cpu = CpuMonitor(
         max_temp=cfg["cpu"]["max_temp"],
         max_usage=cfg["cpu"]["max_usage"],
+        dll_path=cfg.get("lhm_dll_path", ""),
     )
     gpu = GpuMonitor(
         max_temp=cfg["gpu"]["max_temp"],

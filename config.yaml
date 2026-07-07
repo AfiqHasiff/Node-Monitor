@@ -2,6 +2,9 @@ telegram:
   bot_token: "YOUR_BOT_TOKEN_HERE"
   chat_id: "YOUR_CHAT_ID_HERE"
 
+# Full path to LibreHardwareMonitorLib.dll — found inside your LHM installation folder.
+lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+
 poll_interval_seconds: 30
 
 logging_enabled: false

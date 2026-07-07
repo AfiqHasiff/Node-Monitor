@@ -33,9 +33,11 @@ pip install -r requirements.txt
 
 ### 2. Set up LibreHardwareMonitor
 
-Download and run LHM as Administrator at least once so it registers its WMI provider. Enable **Run on Windows startup** and **Start minimized** in its Options menu.
+Download and extract to a permanent folder (e.g. `C:\Tools\LibreHardwareMonitor\`), run as Administrator, and enable **Run on Windows startup** + **Start minimized** in Options.
 
-> Without LHM, CPU temperature alerts are silently skipped — all other metrics still work.
+Then set `lhm_dll_path` in `config.yaml` to the full path of `LibreHardwareMonitorLib.dll` inside that folder. The agent loads the DLL directly — no WMI provider required.
+
+> Without LHM the agent still runs — CPU temperature is skipped and retried each poll cycle until the DLL becomes accessible.
 
 ### 3. Create a Telegram bot
 

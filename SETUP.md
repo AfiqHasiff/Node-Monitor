@@ -28,15 +28,21 @@ LibreHardwareMonitor as a WMI bridge.
 
 2. Extract the zip to a permanent location (e.g. `C:\Tools\LibreHardwareMonitor\`)
 
-3. Run `LibreHardwareMonitor.exe` **as Administrator** at least once so it
-   installs the WMI provider.
+3. Extract the zip to a permanent location, e.g.:
+   ```
+   C:\Tools\LibreHardwareMonitor\
+   ```
 
-4. In the Options menu, enable:
+4. Run `LibreHardwareMonitor.exe` as Administrator. In the Options menu enable:
    - **Run on Windows startup**
    - **Start minimized**
 
-> If LHM is not running, the agent will still work — CPU temperature will simply
-> be absent from readings and alerts. All other metrics continue normally.
+5. Note the path to `LibreHardwareMonitorLib.dll` inside that folder — you will need
+   it in Step 4.
+
+> The agent loads the LHM DLL directly via pythonnet — no WMI provider is needed.
+> If the DLL path is wrong or LHM is missing, CPU temperature is skipped and retried
+> each poll cycle. All other metrics continue working.
 
 ---
 
@@ -68,12 +74,14 @@ LibreHardwareMonitor as a WMI bridge.
 
 ## Step 4 — Configure the agent
 
-Edit `config.yaml` and fill in your token and chat ID:
+Edit `config.yaml` and fill in your token, chat ID, and LHM DLL path:
 
 ```yaml
 telegram:
   bot_token: "123456789:AABBccDDeeFFggHHiiJJkkLLmmNNooPPqq"
   chat_id: "123456789"
+
+lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
 ```
 
 Adjust thresholds to suit your hardware. Set any threshold to `0` to disable that alert:
