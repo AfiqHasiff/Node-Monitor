@@ -20,29 +20,26 @@ pip install -r requirements.txt
 
 ## Step 2 — Install LibreHardwareMonitor (for CPU temperature)
 
-CPU temperature on Windows is not exposed via standard APIs. We use
-LibreHardwareMonitor as a WMI bridge.
+CPU temperature is not exposed via standard Windows APIs. The agent loads
+`LibreHardwareMonitorLib.dll` directly via pythonnet — no WMI provider needed.
 
 1. Download the latest release from:
    https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases
 
-2. Extract the zip to a permanent location (e.g. `C:\Tools\LibreHardwareMonitor\`)
-
-3. Extract the zip to a permanent location, e.g.:
+2. Extract the zip to a permanent location, e.g.:
    ```
    C:\Tools\LibreHardwareMonitor\
    ```
 
-4. Run `LibreHardwareMonitor.exe` as Administrator. In the Options menu enable:
+3. Run `LibreHardwareMonitor.exe` **as Administrator**. In the Options menu enable:
    - **Run on Windows startup**
    - **Start minimized**
 
-5. Note the path to `LibreHardwareMonitorLib.dll` inside that folder — you will need
-   it in Step 4.
+4. Note the full path to `LibreHardwareMonitorLib.dll` inside that folder — you will
+   need it in Step 4 (e.g. `C:\Tools\LibreHardwareMonitor\LibreHardwareMonitorLib.dll`).
 
-> The agent loads the LHM DLL directly via pythonnet — no WMI provider is needed.
-> If the DLL path is wrong or LHM is missing, CPU temperature is skipped and retried
-> each poll cycle. All other metrics continue working.
+> If the DLL path is wrong or LHM is not installed, CPU temperature is silently skipped
+> and retried on each poll cycle. All other metrics continue working.
 
 ---
 
@@ -204,10 +201,10 @@ midnight and keeping the last 30 days. Set it back to `false` when no longer nee
 
 | Metric       | Source                         | Alert support | Example display         |
 |--------------|--------------------------------|---------------|-------------------------|
-| CPU Temp     | LibreHardwareMonitor (WMI)     | Yes           | `92°C`                  |
-| CPU Usage    | psutil                         | Yes           | `34% @ 3.8GHz`          |
-| GPU Temp     | pynvml (NVIDIA)                | Yes           | `47°C`                  |
-| GPU Usage    | pynvml (NVIDIA)                | Yes           | `12% @ 7000MHz`         |
+| CPU Temp     | LibreHardwareMonitor (DLL)     | Yes           | `92°C / 90°C`           |
+| CPU Usage    | psutil                         | Yes           | `34% @ 3.8GHz / 90%`    |
+| GPU Temp     | pynvml (NVIDIA)                | Yes           | `47°C / 80°C`           |
+| GPU Usage    | pynvml (NVIDIA)                | Yes           | `12% @ 7000MHz / 95%`   |
 | GPU VRAM     | pynvml (NVIDIA)                | Yes           | `6.2 / 16GB (41%)`      |
 | RAM Usage    | psutil                         | No            | `6.3 / 16GB (39%)`      |
 | Idle Time    | Win32 GetLastInputInfo         | Yes           | `2m / 1h`               |

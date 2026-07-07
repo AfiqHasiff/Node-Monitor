@@ -58,6 +58,8 @@ telegram:
   bot_token: "123456789:AABBccDDeeFF..."
   chat_id: "123456789"
 
+lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+
 poll_interval_seconds: 30
 logging_enabled: false   # set true to write logs to /logs/
 
