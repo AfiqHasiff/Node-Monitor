@@ -1,65 +1,81 @@
+import psutil
+
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
-# WTS session states
 _WTS_ACTIVE = 0
 
-# WTSSessionInfoEx lock states
-_WTS_SESSIONSTATE_LOCK = 0
-_WTS_SESSIONSTATE_UNLOCK = 1
 
-
-def _get_session_info() -> tuple[str | None, bool]:
-    """
-    Return (username, is_locked) for the active console session.
-    Uses WTSQuerySessionInformationW with WTSSessionInfoEx (25) to get lock state —
-    this works correctly from background/elevated processes unlike OpenInputDesktop.
-    """
+def _get_active_username() -> str | None:
     try:
         import win32ts  # type: ignore
-
         sessions = win32ts.WTSEnumerateSessions(win32ts.WTS_CURRENT_SERVER_HANDLE)
         for s in sessions:
             if s["State"] != _WTS_ACTIVE or s["SessionId"] == 0:
                 continue
-
-            session_id = s["SessionId"]
-
             try:
                 username = win32ts.WTSQuerySessionInformation(
                     win32ts.WTS_CURRENT_SERVER_HANDLE,
-                    session_id,
+                    s["SessionId"],
                     win32ts.WTSUserName,
                 )
+                if username:
+                    return username
             except Exception:
-                username = None
-
-            # WTSSessionInfoEx (value 25) returns a WTSINFOEX struct with lock state
-            try:
-                info = win32ts.WTSQuerySessionInformation(
-                    win32ts.WTS_CURRENT_SERVER_HANDLE,
-                    session_id,
-                    25,  # WTSSessionInfoEx
-                )
-                # info is a dict: {"Level": 1, "Data": {"SessionFlags": ...}}
-                session_flags = info.get("Data", {}).get("SessionFlags", _WTS_SESSIONSTATE_UNLOCK)
-                locked = session_flags == _WTS_SESSIONSTATE_LOCK
-            except Exception:
-                locked = False
-
-            return username or None, locked
-
-        return None, False
+                continue
+        return None
     except Exception as e:
-        get_logger().warning("Failed to read session info: %s", e)
-        return None, False
+        get_logger().warning("Failed to read session username: %s", e)
+        return None
+
+
+def _is_session_locked() -> bool:
+    """
+    Detect lock screen by checking for LogonUI.exe in the active console session.
+    Windows spawns LogonUI.exe in the user's session when the screen is locked and
+    terminates it on unlock. Reliable from elevated/background processes.
+    """
+    try:
+        import win32ts    # type: ignore
+        import win32con   # type: ignore
+
+        session_id = None
+        sessions = win32ts.WTSEnumerateSessions(win32ts.WTS_CURRENT_SERVER_HANDLE)
+        for s in sessions:
+            if s["State"] == _WTS_ACTIVE and s["SessionId"] != 0:
+                session_id = s["SessionId"]
+                break
+
+        if session_id is None:
+            return False
+
+        for proc in psutil.process_iter(["name", "pid"]):
+            if proc.info["name"].lower() != "logonui.exe":
+                continue
+            try:
+                import win32process  # type: ignore
+                import win32api      # type: ignore
+                handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, proc.info["pid"])
+                proc_session = win32process.GetProcessId(handle)
+                win32api.CloseHandle(handle)
+                if proc_session == session_id:
+                    return True
+            except Exception:
+                # If we can't query the session, assume it's in the right session
+                return True
+
+        return False
+    except Exception as e:
+        get_logger().warning("Failed to check lock state: %s", e)
+        return False
 
 
 class SessionMonitor(BaseMonitor):
-    """Reports the logged-on Windows username and whether the session is locked."""
+    """Reports the logged-on Windows username and lock state."""
 
     def read(self) -> list[MetricSnapshot]:
-        username, locked = _get_session_info()
+        username = _get_active_username()
+        locked = _is_session_locked()
 
         if username:
             display = f"{username} (Locked)" if locked else username
