@@ -25,7 +25,6 @@ class CpuMonitor(BaseMonitor):
         self._max_usage = max_usage
         self._dll_path = dll_path
         self._computer = None
-        self._UpdateVisitor = None
         self._init_lhm()
 
     def _init_lhm(self) -> bool:
@@ -38,25 +37,7 @@ class CpuMonitor(BaseMonitor):
         try:
             import clr  # type: ignore
             clr.AddReference(self._dll_path)
-            from LibreHardwareMonitor.Hardware import Computer, IVisitor  # type: ignore
-            import System  # type: ignore
-
-            # Implement IVisitor via pythonnet to properly trigger AMD SMU sensor updates
-            class UpdateVisitor(IVisitor):
-                def VisitComputer(self, computer):
-                    computer.Traverse(self)
-                def VisitHardware(self, hardware):
-                    hardware.Update()
-                    for sub in hardware.SubHardware:
-                        sub.Accept(self)
-                def VisitSensor(self, sensor):
-                    pass
-                def VisitParameter(self, parameter):
-                    pass
-
-            self._UpdateVisitor = UpdateVisitor
-
-            computer = Computer()
+            computer = __import__("LibreHardwareMonitor.Hardware", fromlist=["Computer"]).Computer()
             computer.IsCpuEnabled = True
             computer.Open()
             self._computer = computer
@@ -88,16 +69,20 @@ class CpuMonitor(BaseMonitor):
             results.extend(self._collect_temp_sensors(sub))
         return results
 
+    def _update_hardware(self, hardware) -> None:
+        """Recursively update hardware and all sub-hardware."""
+        hardware.Update()
+        for sub in hardware.SubHardware:
+            self._update_hardware(sub)
+
     def _read_cpu_temp(self) -> float | None:
         if self._computer is None:
             if not self._init_lhm():
                 return None
         try:
-            # Use visitor pattern — required for AMD SMU temperature sensors to update
-            self._computer.Accept(self._UpdateVisitor())
-
             sensors = []
             for hardware in self._computer.Hardware:
+                self._update_hardware(hardware)
                 sensors.extend(self._collect_temp_sensors(hardware))
 
             if not sensors:
