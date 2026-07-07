@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>PC Monitoring Agent — sends Telegram alerts when system thresholds are exceeded.</Description>
+    <URI>\PC Monitor Agent</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Delay>PT30S</Delay>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- Replace YOURUSERNAME with your Windows username -->
+      <UserId>YOURUSERNAME</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+    <Enabled>true</Enabled>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <!-- Replace with full path to pythonw.exe on your machine -->
+      <Command>C:\Users\YOURUSERNAME\AppData\Local\Programs\Python\Python311\pythonw.exe</Command>
+      <Arguments>main.py</Arguments>
+      <!-- Replace with the full path to the project folder -->
+      <WorkingDirectory>C:\Users\YOURUSERNAME\Documents\ResearchProject\status-monitor</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

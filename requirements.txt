@@ -1,0 +1,6 @@
+psutil>=5.9
+pyyaml>=6.0
+python-telegram-bot>=21.0
+nvidia-ml-py>=12.0          # pynvml — NVIDIA GPU metrics
+wmi>=1.5.1                  # WMI bridge for LHM CPU temps (Windows only)
+pywin32>=306                # Win32 API for idle time detection

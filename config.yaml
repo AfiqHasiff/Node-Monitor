@@ -1,0 +1,21 @@
+telegram:
+  bot_token: "YOUR_BOT_TOKEN_HERE"
+  chat_id: "YOUR_CHAT_ID_HERE"
+
+poll_interval_seconds: 30
+
+logging_enabled: false
+
+# Set any threshold to 0 to disable that alert entirely.
+
+idle:
+  threshold_minutes: 240
+
+cpu:
+  max_temp: 90
+  max_usage: 90
+
+gpu:
+  max_temp: 80
+  max_usage: 95
+  max_vram_usage: 90
