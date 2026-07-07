@@ -47,8 +47,11 @@ class CpuMonitor(BaseMonitor):
         hardware.Update()
         for sensor in hardware.Sensors:
             try:
-                # Use string comparison — .NET enum == in pythonnet 3 can silently mismatch
-                if str(sensor.SensorType) != "Temperature":
+                # Case-insensitive substring check handles all pythonnet 3 enum repr variants
+                # e.g. "Temperature", "SensorType.Temperature", "Hardware.SensorType.Temperature"
+                if "temperature" not in str(sensor.SensorType).lower():
+                    continue
+                if sensor.Value is None:
                     continue
                 val = float(sensor.Value)
                 if val > 0:
