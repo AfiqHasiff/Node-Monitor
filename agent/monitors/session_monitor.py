@@ -1,29 +1,33 @@
-import psutil
+import ctypes
+from ctypes import windll, c_ulong, byref
 
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
 _WTS_ACTIVE = 0
 
+windll.kernel32.ProcessIdToSessionId.restype = ctypes.c_bool
+windll.kernel32.ProcessIdToSessionId.argtypes = [c_ulong, ctypes.POINTER(c_ulong)]
+windll.kernel32.WTSGetActiveConsoleSessionId.restype = c_ulong
+
+
+def _get_active_session_id() -> int | None:
+    session_id = windll.kernel32.WTSGetActiveConsoleSessionId()
+    return None if session_id == 0xFFFFFFFF else int(session_id)
+
 
 def _get_active_username() -> str | None:
     try:
         import win32ts  # type: ignore
-        sessions = win32ts.WTSEnumerateSessions(win32ts.WTS_CURRENT_SERVER_HANDLE)
-        for s in sessions:
-            if s["State"] != _WTS_ACTIVE or s["SessionId"] == 0:
-                continue
-            try:
-                username = win32ts.WTSQuerySessionInformation(
-                    win32ts.WTS_CURRENT_SERVER_HANDLE,
-                    s["SessionId"],
-                    win32ts.WTSUserName,
-                )
-                if username:
-                    return username
-            except Exception:
-                continue
-        return None
+        session_id = _get_active_session_id()
+        if session_id is None:
+            return None
+        username = win32ts.WTSQuerySessionInformation(
+            win32ts.WTS_CURRENT_SERVER_HANDLE,
+            session_id,
+            win32ts.WTSUserName,
+        )
+        return username or None
     except Exception as e:
         get_logger().warning("Failed to read session username: %s", e)
         return None
@@ -31,38 +35,31 @@ def _get_active_username() -> str | None:
 
 def _is_session_locked() -> bool:
     """
-    Detect lock screen by checking for LogonUI.exe in the active console session.
-    Windows spawns LogonUI.exe in the user's session when the screen is locked and
-    terminates it on unlock. Reliable from elevated/background processes.
+    Check for LockApp.exe (lock screen host) or LogonUI.exe (credential UI) running
+    in the active console session. LockApp.exe is present from Win+L onwards;
+    LogonUI.exe appears when the credential prompt is shown. Checking both covers
+    the full lock lifecycle reliably from an elevated background process.
     """
     try:
-        import win32ts    # type: ignore
-        import win32con   # type: ignore
+        import psutil  # type: ignore
 
-        session_id = None
-        sessions = win32ts.WTSEnumerateSessions(win32ts.WTS_CURRENT_SERVER_HANDLE)
-        for s in sessions:
-            if s["State"] == _WTS_ACTIVE and s["SessionId"] != 0:
-                session_id = s["SessionId"]
-                break
-
+        session_id = _get_active_session_id()
         if session_id is None:
             return False
 
         for proc in psutil.process_iter(["name", "pid"]):
-            if proc.info["name"].lower() != "logonui.exe":
+            if proc.info["name"].lower() not in ("lockapp.exe", "logonui.exe"):
                 continue
             try:
-                import win32process  # type: ignore
-                import win32api      # type: ignore
-                handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, proc.info["pid"])
-                proc_session = win32process.GetProcessId(handle)
-                win32api.CloseHandle(handle)
-                if proc_session == session_id:
+                proc_session = c_ulong(0)
+                ok = windll.kernel32.ProcessIdToSessionId(
+                    c_ulong(proc.info["pid"]),
+                    byref(proc_session),
+                )
+                if ok and proc_session.value == session_id:
                     return True
             except Exception:
-                # If we can't query the session, assume it's in the right session
-                return True
+                continue
 
         return False
     except Exception as e:

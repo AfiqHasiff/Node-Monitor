@@ -1,45 +1,19 @@
 import ctypes
-from ctypes import windll, c_ulong, c_void_p, c_int64, POINTER
+import threading
+from ctypes import windll, c_uint, Structure, c_uint64, byref
+from ctypes.wintypes import DWORD
 
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
-# WTSSessionInfo (24) returns WTSINFOW which contains LastInputTime and CurrentTime
-_WTS_SESSION_INFO = 24
+windll.kernel32.GetTickCount64.restype = c_uint64
+windll.kernel32.WTSGetActiveConsoleSessionId.restype = c_uint
 
-_wtsapi32 = windll.wtsapi32
-_wtsapi32.WTSQuerySessionInformationW.restype = ctypes.c_bool
-_wtsapi32.WTSQuerySessionInformationW.argtypes = [
-    c_void_p, c_ulong, ctypes.c_uint, POINTER(c_void_p), POINTER(c_ulong),
-]
-_wtsapi32.WTSFreeMemory.restype = None
-_wtsapi32.WTSFreeMemory.argtypes = [c_void_p]
-windll.kernel32.WTSGetActiveConsoleSessionId.restype = c_ulong
+_DESKTOP_READOBJECTS = 0x00000001
 
 
-class _WTSINFOW(ctypes.Structure):
-    # Layout matches wtsapi32.h WTSINFOW — natural alignment, no explicit packing.
-    # WINSTATIONNAME_LENGTH=32, DOMAIN_LENGTH+1=18, USERNAME_LENGTH+1=21
-    # LARGE_INTEGER fields are 8-byte aligned; ctypes inserts 2 bytes padding after
-    # UserName (ends at offset 174) to reach the next 8-byte boundary at 176.
-    _fields_ = [
-        ("State",                   ctypes.c_ulong),
-        ("SessionId",               ctypes.c_ulong),
-        ("IncomingBytes",           ctypes.c_ulong),
-        ("OutgoingBytes",           ctypes.c_ulong),
-        ("IncomingFrames",          ctypes.c_ulong),
-        ("OutgoingFrames",          ctypes.c_ulong),
-        ("IncomingCompressedBytes", ctypes.c_ulong),
-        ("OutgoingCompressedBytes", ctypes.c_ulong),
-        ("WinStationName",          ctypes.c_wchar * 32),
-        ("Domain",                  ctypes.c_wchar * 18),
-        ("UserName",                ctypes.c_wchar * 21),
-        ("ConnectTime",             c_int64),
-        ("DisconnectTime",          c_int64),
-        ("LastInputTime",           c_int64),
-        ("LogonTime",               c_int64),
-        ("CurrentTime",             c_int64),
-    ]
+class _LASTINPUTINFO(Structure):
+    _fields_ = [("cbSize", c_uint), ("dwTime", DWORD)]
 
 
 def _format_duration(minutes: float) -> str:
@@ -52,42 +26,50 @@ def _format_duration(minutes: float) -> str:
     return f"{mins}m"
 
 
+def _get_last_input_tick() -> int | None:
+    """
+    Read GetLastInputInfo from a fresh thread attached to the interactive desktop.
+    When running elevated, the calling process may be on a different desktop context
+    and GetLastInputInfo would return a frozen value. A new thread that explicitly
+    attaches to WinSta0\\Default sees the correct interactive input queue.
+    """
+    result = [None]
+
+    def _worker():
+        h_desk = windll.user32.OpenDesktopW("Default", 0, False, _DESKTOP_READOBJECTS)
+        if h_desk:
+            windll.user32.SetThreadDesktop(h_desk)
+            windll.user32.CloseDesktop(h_desk)
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            result[0] = int(lii.dwTime)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=1.0)
+    return result[0]
+
+
 def _get_idle_minutes() -> float | None:
     try:
-        session_id = windll.kernel32.WTSGetActiveConsoleSessionId()
-        if session_id == 0xFFFFFFFF:
+        last_input_low = _get_last_input_tick()
+        if last_input_low is None:
             return None
-
-        buf = c_void_p()
-        bytes_returned = c_ulong()
-        ok = _wtsapi32.WTSQuerySessionInformationW(
-            None, session_id, _WTS_SESSION_INFO,
-            ctypes.byref(buf), ctypes.byref(bytes_returned),
-        )
-        if not ok or not buf:
-            return None
-
-        info = ctypes.cast(buf, ctypes.POINTER(_WTSINFOW)).contents
-        last_input = info.LastInputTime
-        current = info.CurrentTime
-        _wtsapi32.WTSFreeMemory(buf)
-
-        if last_input <= 0 or current <= 0:
-            return None
-        idle_100ns = current - last_input
-        if idle_100ns < 0:
-            return None
-        return idle_100ns / (10_000_000 * 60)  # 100ns intervals → minutes
+        tick64 = windll.kernel32.GetTickCount64()
+        tick64_low = tick64 & 0xFFFFFFFF
+        if tick64_low < last_input_low:
+            idle_ms = (0x100000000 - last_input_low) + tick64_low
+        else:
+            idle_ms = tick64_low - last_input_low
+        return idle_ms / 60_000
     except Exception as e:
         get_logger().warning("Failed to read idle time: %s", e)
         return None
 
 
 class IdleMonitor(BaseMonitor):
-    """
-    Time since last keyboard or mouse input via WTSQuerySessionInformationW.
-    Session-aware — works correctly from elevated and background processes.
-    """
+    """Time since last keyboard or mouse input, read from the interactive desktop."""
 
     def __init__(self, threshold_minutes: float):
         super().__init__()
