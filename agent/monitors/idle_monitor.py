@@ -1,8 +1,15 @@
+import ctypes
+from ctypes import windll, c_uint, c_uint64, Structure
+from ctypes.wintypes import DWORD
+
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
-from agent.monitors.session_monitor import query_wts_info_ex
 
-_FILETIME_TO_SECONDS = 1e7  # 100-ns ticks per second
+windll.kernel32.GetTickCount64.restype = c_uint64
+
+
+class _LASTINPUTINFO(Structure):
+    _fields_ = [("cbSize", c_uint), ("dwTime", DWORD)]
 
 
 def _format_duration(minutes: float) -> str:
@@ -17,27 +24,31 @@ def _format_duration(minutes: float) -> str:
 
 def _get_idle_minutes() -> float | None:
     """
-    Use LastInputTime and CurrentTime from WTSInfoEx (class 25).
-    Both are kernel-side FILETIMEs sampled atomically at query time, so the
-    difference is accurate regardless of window station or elevation context.
-    Replaces GetLastInputInfo + desktop-switching which requires the calling
-    process to be on the interactive window station to get a live input queue.
+    GetLastInputInfo returns a 32-bit tick counter. GetTickCount64 is used for
+    the current tick to handle the 49-day rollover correctly.
+    This call works from an elevated interactive session (Task Scheduler with
+    'Run only when user is logged on'). It does NOT work from session-0 services.
     """
     try:
-        level1 = query_wts_info_ex()
-        if level1 is None:
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if not windll.user32.GetLastInputInfo(ctypes.byref(lii)):
             return None
-        idle_ticks = level1.CurrentTime - level1.LastInputTime
-        if idle_ticks < 0:
-            return None
-        return idle_ticks / _FILETIME_TO_SECONDS / 60
+        tick64 = windll.kernel32.GetTickCount64()
+        last_low = int(lii.dwTime)
+        now_low = tick64 & 0xFFFFFFFF
+        if now_low < last_low:
+            idle_ms = (0x100000000 - last_low) + now_low
+        else:
+            idle_ms = now_low - last_low
+        return idle_ms / 60_000
     except Exception as e:
         get_logger().warning("Failed to read idle time: %s", e)
         return None
 
 
 class IdleMonitor(BaseMonitor):
-    """Time since last keyboard or mouse input via WTSInfoEx."""
+    """Time since last keyboard or mouse input."""
 
     def __init__(self, threshold_minutes: float):
         super().__init__()
