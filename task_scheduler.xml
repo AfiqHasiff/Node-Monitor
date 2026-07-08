@@ -14,7 +14,7 @@
     <Principal id="Author">
       <!-- Replace YOURUSERNAME with your Windows username -->
       <UserId>YOURUSERNAME</UserId>
-      <LogonType>Password</LogonType>
+      <LogonType>InteractiveToken</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
