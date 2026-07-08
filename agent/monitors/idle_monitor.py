@@ -1,19 +1,8 @@
-import ctypes
-import threading
-from ctypes import windll, c_uint, Structure, c_uint64, byref
-from ctypes.wintypes import DWORD
-
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
+from agent.monitors.session_monitor import query_wts_info_ex
 
-windll.kernel32.GetTickCount64.restype = c_uint64
-windll.kernel32.WTSGetActiveConsoleSessionId.restype = c_uint
-
-_DESKTOP_READOBJECTS = 0x00000001
-
-
-class _LASTINPUTINFO(Structure):
-    _fields_ = [("cbSize", c_uint), ("dwTime", DWORD)]
+_FILETIME_TO_SECONDS = 1e7  # 100-ns ticks per second
 
 
 def _format_duration(minutes: float) -> str:
@@ -26,63 +15,29 @@ def _format_duration(minutes: float) -> str:
     return f"{mins}m"
 
 
-_WINSTA_READATTRIBUTES = 0x00020000
-_WINSTA_ACCESSGLOBALATOMS = 0x00000020
-
-
-def _get_last_input_tick() -> int | None:
-    """
-    Read GetLastInputInfo from a thread explicitly attached to WinSta0\\Default.
-    When running elevated via Task Scheduler the process sits in a service window
-    station. OpenDesktopW("Default") without first switching to WinSta0 would open
-    the service station's "Default" desktop whose input queue is never updated by
-    user activity. Switching the thread to WinSta0 first makes the desktop open
-    resolve to the interactive desktop and returns the real last-input tick.
-    """
-    result = [None]
-
-    def _worker():
-        h_winsta = windll.user32.OpenWindowStationW(
-            "WinSta0", False, _WINSTA_READATTRIBUTES | _WINSTA_ACCESSGLOBALATOMS
-        )
-        if h_winsta:
-            windll.user32.SetProcessWindowStation(h_winsta)
-        h_desk = windll.user32.OpenDesktopW("Default", 0, False, _DESKTOP_READOBJECTS)
-        if h_desk:
-            windll.user32.SetThreadDesktop(h_desk)
-            windll.user32.CloseDesktop(h_desk)
-        if h_winsta:
-            windll.user32.CloseWindowStation(h_winsta)
-        lii = _LASTINPUTINFO()
-        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
-        if windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-            result[0] = int(lii.dwTime)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=1.0)
-    return result[0]
-
-
 def _get_idle_minutes() -> float | None:
+    """
+    Use LastInputTime and CurrentTime from WTSInfoEx (class 25).
+    Both are kernel-side FILETIMEs sampled atomically at query time, so the
+    difference is accurate regardless of window station or elevation context.
+    Replaces GetLastInputInfo + desktop-switching which requires the calling
+    process to be on the interactive window station to get a live input queue.
+    """
     try:
-        last_input_low = _get_last_input_tick()
-        if last_input_low is None:
+        level1 = query_wts_info_ex()
+        if level1 is None:
             return None
-        tick64 = windll.kernel32.GetTickCount64()
-        tick64_low = tick64 & 0xFFFFFFFF
-        if tick64_low < last_input_low:
-            idle_ms = (0x100000000 - last_input_low) + tick64_low
-        else:
-            idle_ms = tick64_low - last_input_low
-        return idle_ms / 60_000
+        idle_ticks = level1.CurrentTime - level1.LastInputTime
+        if idle_ticks < 0:
+            return None
+        return idle_ticks / _FILETIME_TO_SECONDS / 60
     except Exception as e:
         get_logger().warning("Failed to read idle time: %s", e)
         return None
 
 
 class IdleMonitor(BaseMonitor):
-    """Time since last keyboard or mouse input, read from the interactive desktop."""
+    """Time since last keyboard or mouse input via WTSInfoEx."""
 
     def __init__(self, threshold_minutes: float):
         super().__init__()
