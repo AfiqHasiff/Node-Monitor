@@ -1,14 +1,42 @@
 import ctypes
-from ctypes import windll, c_ulong, byref
+from ctypes import windll, c_ulong, c_void_p, POINTER
 
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
-_WTS_ACTIVE = 0
+# WTSSessionInfoEx returns WTSINFOEXW which has a SessionFlags field.
+# WTF_SESSION_FLAG_LOCK_SESSION (0x00000001) is set when the session is locked.
+_WTS_SESSION_INFO_EX = 25
+_WTF_SESSION_FLAG_LOCK_SESSION = 0x00000001
 
-windll.kernel32.ProcessIdToSessionId.restype = ctypes.c_bool
-windll.kernel32.ProcessIdToSessionId.argtypes = [c_ulong, ctypes.POINTER(c_ulong)]
+_wtsapi32 = windll.wtsapi32
+_wtsapi32.WTSQuerySessionInformationW.restype = ctypes.c_bool
+_wtsapi32.WTSQuerySessionInformationW.argtypes = [
+    c_void_p, c_ulong, ctypes.c_uint, POINTER(c_void_p), POINTER(c_ulong),
+]
+_wtsapi32.WTSFreeMemory.restype = None
+_wtsapi32.WTSFreeMemory.argtypes = [c_void_p]
 windll.kernel32.WTSGetActiveConsoleSessionId.restype = c_ulong
+
+
+class _WTSINFOEX_LEVEL1_W(ctypes.Structure):
+    # WTSINFOEXW.Data.WTSInfoExLevel1 — only the first two fields are needed.
+    # SessionId: ULONG, SessionFlags: ULONG (rest of the struct is not accessed)
+    _fields_ = [
+        ("SessionId",    ctypes.c_ulong),
+        ("SessionFlags", ctypes.c_ulong),
+    ]
+
+
+class _WTSINFOEX_LEVEL_W(ctypes.Union):
+    _fields_ = [("WTSInfoExLevel1", _WTSINFOEX_LEVEL1_W)]
+
+
+class _WTSINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("Level", ctypes.c_ulong),
+        ("Data",  _WTSINFOEX_LEVEL_W),
+    ]
 
 
 def _get_active_session_id() -> int | None:
@@ -35,33 +63,29 @@ def _get_active_username() -> str | None:
 
 def _is_session_locked() -> bool:
     """
-    Check for LockApp.exe (lock screen host) or LogonUI.exe (credential UI) running
-    in the active console session. LockApp.exe is present from Win+L onwards;
-    LogonUI.exe appears when the credential prompt is shown. Checking both covers
-    the full lock lifecycle reliably from an elevated background process.
+    Query WTSSessionInfoEx (class 25) for the active console session.
+    WTSINFOEXW.Data.WTSInfoExLevel1.SessionFlags has bit 0 set when locked.
+    This API works from any session including elevated non-interactive services
+    and does not rely on process enumeration.
     """
     try:
-        import psutil  # type: ignore
-
         session_id = _get_active_session_id()
         if session_id is None:
             return False
 
-        for proc in psutil.process_iter(["name", "pid"]):
-            if proc.info["name"].lower() not in ("lockapp.exe", "logonui.exe"):
-                continue
-            try:
-                proc_session = c_ulong(0)
-                ok = windll.kernel32.ProcessIdToSessionId(
-                    c_ulong(proc.info["pid"]),
-                    byref(proc_session),
-                )
-                if ok and proc_session.value == session_id:
-                    return True
-            except Exception:
-                continue
+        buf = c_void_p()
+        bytes_returned = c_ulong()
+        ok = _wtsapi32.WTSQuerySessionInformationW(
+            None, session_id, _WTS_SESSION_INFO_EX,
+            ctypes.byref(buf), ctypes.byref(bytes_returned),
+        )
+        if not ok or not buf:
+            return False
 
-        return False
+        info = ctypes.cast(buf, ctypes.POINTER(_WTSINFOEXW)).contents
+        flags = info.Data.WTSInfoExLevel1.SessionFlags
+        _wtsapi32.WTSFreeMemory(buf)
+        return bool(flags & _WTF_SESSION_FLAG_LOCK_SESSION)
     except Exception as e:
         get_logger().warning("Failed to check lock state: %s", e)
         return False

@@ -26,20 +26,33 @@ def _format_duration(minutes: float) -> str:
     return f"{mins}m"
 
 
+_WINSTA_READATTRIBUTES = 0x00020000
+_WINSTA_ACCESSGLOBALATOMS = 0x00000020
+
+
 def _get_last_input_tick() -> int | None:
     """
-    Read GetLastInputInfo from a fresh thread attached to the interactive desktop.
-    When running elevated, the calling process may be on a different desktop context
-    and GetLastInputInfo would return a frozen value. A new thread that explicitly
-    attaches to WinSta0\\Default sees the correct interactive input queue.
+    Read GetLastInputInfo from a thread explicitly attached to WinSta0\\Default.
+    When running elevated via Task Scheduler the process sits in a service window
+    station. OpenDesktopW("Default") without first switching to WinSta0 would open
+    the service station's "Default" desktop whose input queue is never updated by
+    user activity. Switching the thread to WinSta0 first makes the desktop open
+    resolve to the interactive desktop and returns the real last-input tick.
     """
     result = [None]
 
     def _worker():
+        h_winsta = windll.user32.OpenWindowStationW(
+            "WinSta0", False, _WINSTA_READATTRIBUTES | _WINSTA_ACCESSGLOBALATOMS
+        )
+        if h_winsta:
+            windll.user32.SetProcessWindowStation(h_winsta)
         h_desk = windll.user32.OpenDesktopW("Default", 0, False, _DESKTOP_READOBJECTS)
         if h_desk:
             windll.user32.SetThreadDesktop(h_desk)
             windll.user32.CloseDesktop(h_desk)
+        if h_winsta:
+            windll.user32.CloseWindowStation(h_winsta)
         lii = _LASTINPUTINFO()
         lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
         if windll.user32.GetLastInputInfo(ctypes.byref(lii)):
