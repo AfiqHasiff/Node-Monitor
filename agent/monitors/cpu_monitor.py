@@ -1,13 +1,22 @@
+import ctypes
 import psutil
 
 from agent.base_monitor import BaseMonitor, MetricSnapshot
 from agent.logger import get_logger
 
 
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 class CpuMonitor(BaseMonitor):
     """
     CPU package temperature via LibreHardwareMonitorLib.dll (pythonnet).
     CPU usage % and real-time frequency via psutil.
+    Requires the process to run as Administrator for AMD CPU temperature access.
     """
 
     def __init__(self, max_temp: float, max_usage: float, dll_path: str):
@@ -16,17 +25,19 @@ class CpuMonitor(BaseMonitor):
         self._max_usage = max_usage
         self._dll_path = dll_path
         self._computer = None
-        self._lhm = None
         self._init_lhm()
 
     def _init_lhm(self) -> bool:
-        """Load the LHM DLL and open the computer object. Returns True on success."""
+        if not _is_admin():
+            get_logger().warning(
+                "CPU temp requires Administrator privileges — "
+                "run main.py as Administrator or via an elevated Task Scheduler entry."
+            )
+            return False
         try:
-            import clr  # type: ignore  # pythonnet
+            import clr  # type: ignore
             clr.AddReference(self._dll_path)
-            from LibreHardwareMonitor.Hardware import Computer  # type: ignore
-            self._lhm = __import__("LibreHardwareMonitor.Hardware", fromlist=["Hardware"])
-            computer = Computer()
+            computer = __import__("LibreHardwareMonitor.Hardware", fromlist=["Computer"]).Computer()
             computer.IsCpuEnabled = True
             computer.Open()
             self._computer = computer
@@ -34,7 +45,7 @@ class CpuMonitor(BaseMonitor):
         except FileNotFoundError:
             get_logger().warning(
                 "LHM DLL not found at '%s' — CPU temp will not be monitored. "
-                "Update lhm_dll_path in config.yaml to point to LibreHardwareMonitorLib.dll.",
+                "Update lhm_dll_path in config.yaml.",
                 self._dll_path,
             )
         except Exception as e:
@@ -42,13 +53,9 @@ class CpuMonitor(BaseMonitor):
         return False
 
     def _collect_temp_sensors(self, hardware) -> list[tuple[str, float]]:
-        """Recursively collect (name, value) for all temperature sensors on hardware and sub-hardware."""
         results = []
-        hardware.Update()
         for sensor in hardware.Sensors:
             try:
-                # Case-insensitive substring check handles all pythonnet 3 enum repr variants
-                # e.g. "Temperature", "SensorType.Temperature", "Hardware.SensorType.Temperature"
                 if "temperature" not in str(sensor.SensorType).lower():
                     continue
                 if sensor.Value is None:
@@ -62,6 +69,12 @@ class CpuMonitor(BaseMonitor):
             results.extend(self._collect_temp_sensors(sub))
         return results
 
+    def _update_hardware(self, hardware) -> None:
+        """Recursively update hardware and all sub-hardware."""
+        hardware.Update()
+        for sub in hardware.SubHardware:
+            self._update_hardware(sub)
+
     def _read_cpu_temp(self) -> float | None:
         if self._computer is None:
             if not self._init_lhm():
@@ -69,10 +82,12 @@ class CpuMonitor(BaseMonitor):
         try:
             sensors = []
             for hardware in self._computer.Hardware:
+                self._update_hardware(hardware)
                 sensors.extend(self._collect_temp_sensors(hardware))
+
             if not sensors:
                 return None
-            # Prefer Tctl/Tdie or Package; fall back to highest value found
+
             for name, val in sensors:
                 if "tctl" in name or "tdie" in name or "package" in name:
                     return val
