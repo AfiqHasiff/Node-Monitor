@@ -13,6 +13,7 @@ Each feature segment is independently toggled via config.yaml:
 """
 
 import asyncio
+import ctypes
 import signal
 import sys
 
@@ -89,15 +90,28 @@ async def main() -> None:
         start_sender(sender_cfg)
         logger.info("Packet sender started")
 
+    stop_event = asyncio.Event()
+
     if receiver_enabled:
         async def _action_alert(action: str) -> None:
             snapshots = await get_status()
             await bot.send_action_alert(action, snapshots)
 
         start_receiver(receiver_cfg, loop, _action_alert)
-        logger.info("Packet receiver started")
 
-    stop_event = asyncio.Event()
+        # Register Windows console control handler to catch manual/OS-initiated shutdowns.
+        # CTRL_SHUTDOWN_EVENT (6) and CTRL_LOGOFF_EVENT (5) fire before Windows kills the process.
+        _HANDLER_ROUTINE = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+
+        def _win_ctrl_handler(event: int) -> bool:
+            if event in (5, 6):  # CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+                asyncio.run_coroutine_threadsafe(_action_alert("Turned Off"), loop).result(timeout=10)
+            return False
+
+        _win_handler_ref = _HANDLER_ROUTINE(_win_ctrl_handler)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_win_handler_ref, True)
+
+        logger.info("Packet receiver started — Windows shutdown handler registered")
 
     def _shutdown(*_):
         stop_event.set()
@@ -108,7 +122,13 @@ async def main() -> None:
     logger.info("Monitoring started — poll interval %ds", poll_interval)
 
     while not stop_event.is_set():
-        await asyncio.sleep(poll_interval)
+        try:
+            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=poll_interval)
+        except asyncio.TimeoutError:
+            pass
+
+        if stop_event.is_set():
+            break
 
         if not node_monitor_enabled:
             continue
