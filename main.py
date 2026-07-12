@@ -5,6 +5,11 @@ Starts the async polling loop and Telegram bot together.
 All monitors are polled every `poll_interval_seconds`.
 Alerts fire on the rising edge only (threshold crossed from below).
 When any metric breaches its threshold, one combined message is sent with all metrics.
+
+Each feature segment is independently toggled via config.yaml:
+  node_monitor.enabled  — periodic polling alerts and /status command
+  packet_handler.sender.enabled   — WOL / shutdown relay threads
+  packet_handler.receiver.enabled — shutdown listener + Turned On/Off alerts
 """
 
 import asyncio
@@ -22,6 +27,7 @@ from agent.monitors.ram_monitor import RamMonitor
 from agent.monitors.idle_monitor import IdleMonitor
 from agent.monitors.session_monitor import SessionMonitor
 from agent.telegram_bot import TelegramBot
+from agent.packet_handler import start_sender, start_receiver
 
 
 async def main() -> None:
@@ -31,28 +37,36 @@ async def main() -> None:
         print(f"ERROR: Failed to load config.yaml — {e}", file=sys.stderr)
         sys.exit(1)
 
-    logger = setup_logger(cfg.get("logging_enabled", False))
+    monitor_cfg: dict = cfg.get("monitor", {})
+    logger = setup_logger(monitor_cfg.get("logging_enabled", False))
     logger.info("Agent started")
+
+    node_monitor_enabled: bool = monitor_cfg.get("enabled", True)
+    ph_cfg: dict = cfg.get("packet_handler", {})
+    sender_cfg: dict = ph_cfg.get("sender", {})
+    receiver_cfg: dict = ph_cfg.get("receiver", {})
+    sender_enabled: bool = sender_cfg.get("enabled", False)
+    receiver_enabled: bool = receiver_cfg.get("enabled", False)
 
     # Warm up psutil cpu_percent — first call always returns 0.0
     psutil.cpu_percent(interval=None)
 
     cpu = CpuMonitor(
-        max_temp=cfg["cpu"]["max_temp"],
-        max_usage=cfg["cpu"]["max_usage"],
-        dll_path=cfg.get("lhm_dll_path", ""),
+        max_temp=monitor_cfg["cpu"]["max_temp"],
+        max_usage=monitor_cfg["cpu"]["max_usage"],
+        dll_path=monitor_cfg.get("lhm_dll_path", ""),
     )
     gpu = GpuMonitor(
-        max_temp=cfg["gpu"]["max_temp"],
-        max_usage=cfg["gpu"]["max_usage"],
-        max_vram_usage=cfg["gpu"]["max_vram_usage"],
+        max_temp=monitor_cfg["gpu"]["max_temp"],
+        max_usage=monitor_cfg["gpu"]["max_usage"],
+        max_vram_usage=monitor_cfg["gpu"]["max_vram_usage"],
     )
     ram = RamMonitor()
-    idle = IdleMonitor(threshold_minutes=cfg["idle"]["threshold_minutes"])
+    idle = IdleMonitor(threshold_minutes=monitor_cfg["idle"]["threshold_minutes"])
     session = SessionMonitor()
 
     monitors = [cpu, gpu, ram, idle, session]
-    poll_interval = cfg.get("poll_interval_seconds", 30)
+    poll_interval = monitor_cfg.get("poll_interval_seconds", 30)
 
     async def get_status() -> list[MetricSnapshot]:
         snapshots = []
@@ -64,9 +78,24 @@ async def main() -> None:
         bot_token=cfg["telegram"]["bot_token"],
         chat_id=str(cfg["telegram"]["chat_id"]),
         status_callback=get_status,
+        node_monitor_enabled=node_monitor_enabled,
     )
 
     await bot.start()
+
+    loop = asyncio.get_running_loop()
+
+    if sender_enabled:
+        start_sender(sender_cfg)
+        logger.info("Packet sender started")
+
+    if receiver_enabled:
+        async def _action_alert(action: str) -> None:
+            snapshots = await get_status()
+            await bot.send_action_alert(action, snapshots)
+
+        start_receiver(receiver_cfg, loop, _action_alert)
+        logger.info("Packet receiver started")
 
     stop_event = asyncio.Event()
 
@@ -80,6 +109,9 @@ async def main() -> None:
 
     while not stop_event.is_set():
         await asyncio.sleep(poll_interval)
+
+        if not node_monitor_enabled:
+            continue
 
         all_snapshots: list[MetricSnapshot] = []
         newly_triggered: list[str] = []

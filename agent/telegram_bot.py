@@ -34,15 +34,23 @@ def _format_message(header: str, snapshots: list[MetricSnapshot]) -> str:
 
 
 class TelegramBot:
-    def __init__(self, bot_token: str, chat_id: str, status_callback: StatusCallback):
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        status_callback: StatusCallback,
+        node_monitor_enabled: bool = True,
+    ):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._status_callback = status_callback
+        self._node_monitor_enabled = node_monitor_enabled
         self._app: Application | None = None
 
     async def start(self) -> None:
         self._app = Application.builder().token(self._bot_token).build()
-        self._app.add_handler(CommandHandler("status", self._handle_status))
+        if self._node_monitor_enabled:
+            self._app.add_handler(CommandHandler("status", self._handle_status))
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -67,6 +75,22 @@ class TelegramBot:
             )
         except Exception as e:
             get_logger().error("Failed to send Telegram alert: %s", e)
+
+    async def send_action_alert(self, action: str, snapshots: list[MetricSnapshot]) -> None:
+        """Send a node action alert (Turned On / Turned Off) with current metrics appended."""
+        if self._app is None:
+            return
+        lines = _format_message("⚡ *Node Action*", snapshots).split("\n")
+        lines.append(f"`{'Action':<12}` {_esc(action)}")
+        text = "\n".join(lines)
+        try:
+            await self._app.bot.send_message(
+                chat_id=self._chat_id,
+                text=text,
+                parse_mode="MarkdownV2",
+            )
+        except Exception as e:
+            get_logger().error("Failed to send Telegram action alert: %s", e)
 
     async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:

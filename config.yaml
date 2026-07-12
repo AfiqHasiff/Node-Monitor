@@ -2,23 +2,36 @@ telegram:
   bot_token: "YOUR_BOT_TOKEN_HERE"
   chat_id: "YOUR_CHAT_ID_HERE"
 
-# Full path to LibreHardwareMonitorLib.dll — found inside your LHM installation folder.
-lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+packet_handler:
+  sender:
+    enabled: false
+    wake_listen_port: 8
+    shutdown_listen_port: 9
+    target_ip: "192.168.0.192"
+    target_shutdown_port: 40002
+    broadcast_ip: "192.168.0.255"
+    broadcast_port: 7
 
-poll_interval_seconds: 30
+  receiver:
+    enabled: false
+    listen_port: 40002
+    sender_ip: "192.168.0.247"
+    node_ip: "192.168.0.192"
+    node_mac: "aa:bb:cc:dd:ee:ff"
 
-logging_enabled: false
-
-# Set any threshold to 0 to disable that alert entirely.
-
-idle:
-  threshold_minutes: 60
-
-cpu:
-  max_temp: 90
-  max_usage: 0
-
-gpu:
-  max_temp: 80
-  max_usage: 0
-  max_vram_usage: 0
+monitor:
+  enabled: true
+  logging_enabled: false
+  poll_interval_seconds: 30
+  # Full path to LibreHardwareMonitorLib.dll — found inside your LHM installation folder.
+  lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+  # Set any threshold to 0 to disable that alert entirely.
+  idle:
+    threshold_minutes: 60
+  cpu:
+    max_temp: 90
+    max_usage: 0
+  gpu:
+    max_temp: 80
+    max_usage: 0
+    max_vram_usage: 0
