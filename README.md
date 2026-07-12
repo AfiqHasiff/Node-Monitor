@@ -1,9 +1,10 @@
 # Node Monitor
 
-A lightweight Windows monitoring agent that runs silently in the background and sends system health alerts via Telegram.
+A lightweight Windows monitoring agent that runs silently in the background, sends system health alerts via Telegram, and handles remote wake and shutdown commands via magic packets.
 
 ## Features
 
+### Node Monitor
 - **CPU** — temperature (via LibreHardwareMonitor) and usage % with real-time frequency
 - **GPU** — temperature, usage % with memory clock, and VRAM usage with GB breakdown (NVIDIA)
 - **RAM** — usage with GB breakdown (status reporting only)
@@ -12,9 +13,13 @@ A lightweight Windows monitoring agent that runs silently in the background and 
 - Alerts fire **once** when a threshold is crossed, reset when the metric recovers — no spam
 - When any threshold is breached, **one combined message** is sent showing all metrics with `⚠️` next to the offending ones
 - On-demand `/status` command via Telegram — same layout as alerts
-- Configurable thresholds in `config.yaml` — set any threshold to `0` to disable it
-- Optional daily rotating log file
-- Starts automatically at boot via Windows Task Scheduler
+- Toggle on/off independently via `monitor.enabled` in `config.yaml`
+
+### Packet Handler
+- **Sender** — relays incoming WOL magic packets (subnet broadcast) and forwards shutdown commands to the target node
+- **Receiver** — listens for shutdown signals; sends a Telegram alert when the node turns on or off, then executes system shutdown
+- Sender and receiver are mutually exclusive per node — only one is enabled at a time via config
+- Shutdown relay uses a custom sentinel signal (not raw magic packet bytes) to prevent accidentally waking the receiver NIC via WoL
 
 ## Requirements
 
@@ -35,7 +40,7 @@ pip install -r requirements.txt
 
 Download and extract to a permanent folder (e.g. `C:\Tools\LibreHardwareMonitor\`), run as Administrator, and enable **Run on Windows startup** + **Start minimized** in Options.
 
-Then set `lhm_dll_path` in `config.yaml` to the full path of `LibreHardwareMonitorLib.dll` inside that folder. The agent loads the DLL directly — no WMI provider required.
+Then set `monitor.lhm_dll_path` in `config.yaml` to the full path of `LibreHardwareMonitorLib.dll` inside that folder. The agent loads the DLL directly — no WMI provider required.
 
 > Without LHM the agent still runs — CPU temperature is skipped and retried each poll cycle until the DLL becomes accessible.
 
@@ -51,30 +56,49 @@ Then set `lhm_dll_path` in `config.yaml` to the full path of `LibreHardwareMonit
 
 ### 4. Configure
 
-Edit `config.yaml`:
+Edit `config.yaml`. The program is installed on both nodes but each node only enables the relevant features.
 
 ```yaml
 telegram:
   bot_token: "123456789:AABBccDDeeFF..."
-  chat_id: "123456789"
+  chat_id:   "123456789"
 
-lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+packet_handler:
+  sender:
+    enabled:              false
+    wake_listen_port:     8       # incoming WOL requests
+    shutdown_listen_port: 9       # incoming shutdown requests
+    target_ip:            "192.168.0.192"
+    target_shutdown_port: 40002
+    broadcast_ip:         "192.168.0.255"
+    broadcast_port:       7       # WoL port on target NIC (typically 7 or 9)
 
-poll_interval_seconds: 30
-logging_enabled: false   # set true to write logs to /logs/
+  receiver:
+    enabled:      false
+    listen_port:  40002
+    sender_ip:    "192.168.0.247"  # only accept signals from this IP
+    node_ip:      "192.168.0.192"
+    node_mac:     "aa:bb:cc:dd:ee:ff"
 
-idle:
-  threshold_minutes: 60   # 0 = disabled
-
-cpu:
-  max_temp: 90            # 0 = disabled
-  max_usage: 0            # 0 = disabled
-
-gpu:
-  max_temp: 80
-  max_usage: 0            # 0 = disabled
-  max_vram_usage: 0       # 0 = disabled
+monitor:
+  enabled:              true
+  logging_enabled:      false     # set true to write logs to /logs/
+  poll_interval_seconds: 30
+  lhm_dll_path: "C:\\Tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"
+  idle:
+    threshold_minutes: 60   # 0 = disabled
+  cpu:
+    max_temp:  90           # 0 = disabled
+    max_usage: 0
+  gpu:
+    max_temp:      80
+    max_usage:     0
+    max_vram_usage: 0
 ```
+
+**Sender node** — set `packet_handler.sender.enabled: true`, keep receiver and monitor flags as needed.
+
+**Receiver node** — set `packet_handler.receiver.enabled: true`, keep sender and monitor flags as needed.
 
 ### 5. Test manually
 
@@ -82,9 +106,9 @@ gpu:
 python main.py
 ```
 
-Send `/status` to your Telegram bot. You should receive a reply like:
+Send `/status` to your Telegram bot (when `monitor.enabled: true`). You should receive a reply like:
 
-```text
+```
 🖥 Node Status
 
 CPU Temp      54°C / 90°C
@@ -109,16 +133,17 @@ See [SETUP.md](SETUP.md) for the full step-by-step guide.
 
 ```text
 status-monitor/
-├── main.py                       # Entry point
-├── config.yaml                   # Thresholds and credentials
+├── main.py                       # Entry point — starts monitor, sender, or receiver per config
+├── config.yaml                   # All settings and credentials
 ├── requirements.txt
 ├── task_scheduler.xml            # Windows Task Scheduler import file
 ├── SETUP.md                      # Full setup guide
 └── agent/
     ├── base_monitor.py           # Abstract base + shared alert state machine
     ├── config.py
-    ├── logger.py
+    ├── logger.py                 # Unified logger — writes to /logs/ relative to project root
     ├── telegram_bot.py
+    ├── packet_handler.py         # Sender and receiver thread logic
     └── monitors/
         ├── cpu_monitor.py        # Temp + usage % + frequency
         ├── gpu_monitor.py        # Temp + usage % + memory clock + VRAM
@@ -129,15 +154,17 @@ status-monitor/
 
 ## Telegram Commands
 
-| Command   | Description                      |
-|-----------|----------------------------------|
-| `/status` | Current readings for all metrics |
+| Command   | Description                                          |
+|-----------|------------------------------------------------------|
+| `/status` | Current readings for all metrics (monitor node only) |
 
-## Alert Example
+## Alert Examples
+
+### Threshold alert
 
 When CPU temperature breaches its threshold, a single message is sent with all metrics:
 
-```text
+```
 ⚠️ Threshold Alert
 
 CPU Temp      92°C / 90°C  ⚠️
@@ -151,3 +178,38 @@ Logged On     YourWindowsUsername
 ```
 
 Alerts only fire on the **rising edge** — no repeated notifications while the metric stays above threshold. Once it drops back below, the alert resets and will fire again if it breaches again.
+
+### Node action alert
+
+When the receiver node turns on or off, a Telegram alert is sent with the current metrics and an `Action` line:
+
+```
+⚡ Node Action
+
+CPU Temp      54°C / 90°C
+CPU Usage     12% @ 3.2GHz
+GPU Temp      42°C / 80°C
+GPU Usage     3% @ 7000MHz
+GPU VRAM      1.1 / 16GB (7%)
+RAM Usage     4.2 / 16GB (26%)
+Idle Time     0m / 1h
+Logged On     YourWindowsUsername
+Action        Turned On
+```
+
+## Packet Handler — How It Works
+
+```
+[Someone]
+    │  magic packet
+    ▼
+[Sender node — port 8 / 9]
+    │
+    ├─ wake:     rebroadcasts raw magic packet → 192.168.0.255:7 (NIC picks it up, powers on)
+    │
+    └─ shutdown: forwards SHUTDOWN sentinel → receiver node:40002 (application-level only,
+                 NIC ignores it — no accidental WoL)
+
+[Receiver node — port 40002]
+    └─ validates sentinel + source IP → sends Turned Off alert → executes shutdown
+```

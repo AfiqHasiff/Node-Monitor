@@ -1,9 +1,15 @@
 """
 Packet handler integration — sender and receiver logic run as daemon threads.
 
-Sender: relays incoming WOL and shutdown magic packets to the target node.
-Receiver: listens for shutdown magic packets; fires Turned On alert on start,
-          Turned Off alert on valid packet, then triggers system shutdown.
+Sender: relays incoming WOL magic packets (rebroadcast) and shutdown commands
+        (forwarded as a SHUTDOWN_SIGNAL sentinel, NOT as magic packet bytes).
+Receiver: listens for the SHUTDOWN_SIGNAL sentinel; fires Turned On alert on
+          start, Turned Off alert on valid signal, then triggers system shutdown.
+
+The shutdown relay intentionally does NOT forward the raw magic packet to the
+receiver. Forwarding intact magic packet bytes would trigger WoL at the NIC
+firmware level even when the machine is off, powering it back on. The sentinel
+is unrecognisable to NIC firmware and is only acted on by this application.
 """
 
 import asyncio
@@ -13,6 +19,9 @@ import threading
 from typing import Callable, Awaitable
 
 from agent.logger import make_packet_handler_logger
+
+
+_SHUTDOWN_SIGNAL = b'SHUTDOWN'
 
 
 def _parse_magic_packet(data: bytes) -> tuple[str | None, str | None]:
@@ -85,7 +94,7 @@ def start_sender(cfg: dict) -> None:
 
             log.info(f"[SHUTDOWN] [VALID]    Magic packet verified — target MAC: {mac}")
             log.info(f"[SHUTDOWN] [SENDING]  Forwarding shutdown signal to {target_ip}:{target_shutdown_port}...")
-            forward_sock.sendto(data, (target_ip, target_shutdown_port))
+            forward_sock.sendto(_SHUTDOWN_SIGNAL, (target_ip, target_shutdown_port))
             log.info(f"[SHUTDOWN] [DONE]     Shutdown signal forwarded to target node")
 
     log.info("Packet sender starting...")
@@ -137,13 +146,11 @@ def start_receiver(
                 log.warning(f"[REJECTED] Packet from unknown source {addr[0]} — only accepting from {sender_ip}")
                 continue
 
-            mac, err = _parse_magic_packet(data)
-            if err:
-                log.warning(f"[INVALID]  {err} — dropping")
+            if data != _SHUTDOWN_SIGNAL:
+                log.warning(f"[INVALID]  Unrecognised payload ({len(data)} bytes) — dropping")
                 continue
 
-            log.info(f"[VALID]    Magic packet verified — target MAC: {mac}")
-            log.info(f"[SHUTDOWN] Shutdown command received from sender")
+            log.info(f"[VALID]    Shutdown signal received from sender")
 
             _fire("Turned Off")
 
