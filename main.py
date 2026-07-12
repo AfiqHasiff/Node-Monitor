@@ -49,25 +49,28 @@ async def main() -> None:
     sender_enabled: bool = sender_cfg.get("enabled", False)
     receiver_enabled: bool = receiver_cfg.get("enabled", False)
 
-    # Warm up psutil cpu_percent — first call always returns 0.0
-    psutil.cpu_percent(interval=None)
-
-    cpu = CpuMonitor(
-        max_temp=monitor_cfg["cpu"]["max_temp"],
-        max_usage=monitor_cfg["cpu"]["max_usage"],
-        dll_path=monitor_cfg.get("lhm_dll_path", ""),
-    )
-    gpu = GpuMonitor(
-        max_temp=monitor_cfg["gpu"]["max_temp"],
-        max_usage=monitor_cfg["gpu"]["max_usage"],
-        max_vram_usage=monitor_cfg["gpu"]["max_vram_usage"],
-    )
-    ram = RamMonitor()
-    idle = IdleMonitor(threshold_minutes=monitor_cfg["idle"]["threshold_minutes"])
-    session = SessionMonitor()
-
-    monitors = [cpu, gpu, ram, idle, session]
+    monitors = []
     poll_interval = monitor_cfg.get("poll_interval_seconds", 30)
+
+    if node_monitor_enabled:
+        # Warm up psutil cpu_percent — first call always returns 0.0
+        psutil.cpu_percent(interval=None)
+
+        monitors = [
+            CpuMonitor(
+                max_temp=monitor_cfg["cpu"]["max_temp"],
+                max_usage=monitor_cfg["cpu"]["max_usage"],
+                dll_path=monitor_cfg.get("lhm_dll_path", ""),
+            ),
+            GpuMonitor(
+                max_temp=monitor_cfg["gpu"]["max_temp"],
+                max_usage=monitor_cfg["gpu"]["max_usage"],
+                max_vram_usage=monitor_cfg["gpu"]["max_vram_usage"],
+            ),
+            RamMonitor(),
+            IdleMonitor(threshold_minutes=monitor_cfg["idle"]["threshold_minutes"]),
+            SessionMonitor(),
+        ]
 
     async def get_status() -> list[MetricSnapshot]:
         snapshots = []
@@ -75,14 +78,17 @@ async def main() -> None:
             snapshots.extend(monitor.read())
         return snapshots
 
-    bot = TelegramBot(
-        bot_token=cfg["telegram"]["bot_token"],
-        chat_id=str(cfg["telegram"]["chat_id"]),
-        status_callback=get_status,
-        node_monitor_enabled=node_monitor_enabled,
-    )
+    telegram_needed = node_monitor_enabled or receiver_enabled
+    bot: TelegramBot | None = None
 
-    await bot.start()
+    if telegram_needed:
+        bot = TelegramBot(
+            bot_token=cfg["telegram"]["bot_token"],
+            chat_id=str(cfg["telegram"]["chat_id"]),
+            status_callback=get_status,
+            node_monitor_enabled=node_monitor_enabled,
+        )
+        await bot.start()
 
     loop = asyncio.get_running_loop()
 
@@ -144,7 +150,7 @@ async def main() -> None:
             for alert in alerts:
                 newly_triggered.append(f"{alert.label} {alert.value}{alert.unit}")
 
-        if newly_triggered:
+        if newly_triggered and bot:
             for label_str in newly_triggered:
                 logger.info("%s alert sent", label_str)
             await bot.send_alert(all_snapshots)
@@ -153,7 +159,8 @@ async def main() -> None:
             logger.info("%s %s%s", s.label, s.value, s.unit)
 
     logger.info("Agent stopping")
-    await bot.stop()
+    if bot:
+        await bot.stop()
 
 
 if __name__ == "__main__":
